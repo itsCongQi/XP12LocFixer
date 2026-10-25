@@ -166,7 +166,7 @@ def fix_loc(p, rwys, a):
     airport, rwy, name = p[8].upper(), norm_rwy(p[10]), " ".join(p[11:])
     mag_part = math.floor(brg_field / 360.0) * 360.0
     true_crs = brg_field - mag_part
-    d = {"lat": lat, "lon": lon, "true_crs": round(true_crs, 3)}
+    d = {"lat": lat, "lon": lon, "true_crs": round(true_crs, 3), "true_crs_raw": true_crs}
 
     if any(s in name.upper() for s in SKIP_NAMES):
         return "skip_type", d, None
@@ -266,8 +266,32 @@ def is_ours(path):
 
 def fmt_nav(q):
     # Keep the XPNAV1200 column look; X-Plane only needs whitespace separation.
-    return "%2s %13s %14s %8s %8s %5s %11s %s %s %s %s %s" % (
-        q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8], q[9], q[10], " ".join(q[11:]))
+    return "%2s %13s %14s %8s %8s %5s %11s %s" % (
+        q[0], q[1], q[2], q[3], q[4], q[5], q[6], " ".join(q[7:]))
+
+
+def companions(q, old_crs, comp):
+    """Rows that must travel with a corrected LOC.
+
+    An ILS's localizer, glideslope and DME share an ident and airport (some
+    airports reuse one ident for both runway ends). When user_nav.dat
+    redefines the localizer, X-Plane drops the stock rows with that ident and
+    airport, so we re-emit them. The glideslope's course (its
+    bearing field is angle * 100000 + true course) follows the new LOC course.
+    """
+    new_crs = float(q[6]) % 360
+    out = []
+    for c in comp.get((q[7], q[8]), ()):
+        if c[0] in ("4", "5"):
+            continue  # localizers are emitted on their own, fixed or not
+        c = list(c)
+        if c[0] == "6":
+            field = float(c[6])
+            angle_part = math.floor(field / 1000.0) * 1000.0
+            if abs(angdiff(field - angle_part, old_crs)) <= 1.0:
+                c[6] = "%.3f" % (angle_part + new_crs)
+        out.append(c)
+    return out
 
 
 def main():
@@ -318,23 +342,44 @@ def main():
             lines = f.read().splitlines()
         existing = [l for l in lines[2:] if l.strip() and l.split()[0] != "99"]
 
-    fixed, rows, counts = [], [], {}
+    fixed, rows, counts, comp = [], [], {}, {}
     header = ""
     with open(nav, "r", encoding="utf-8", errors="replace") as f:
         f.readline()
         header = f.readline().strip()
         for line in f:
             p = line.split()
+            if len(p) >= 11 and p[0] in ("4", "5", "6", "12", "13"):
+                comp.setdefault((p[7], p[8]), []).append(p)
             if len(p) < 12 or p[0] not in ("4", "5"):
                 continue
             status, d, q = fix_loc(p, rwys, a)
             counts[status] = counts.get(status, 0) + 1
             if q:
-                fixed.append(q)
+                fixed.append((q, d["true_crs_raw"]))
             rows.append(dict(status=status, type=p[0], ident=p[7], airport=p[8], region=p[9],
                              rwy=p[10], name=" ".join(p[11:]), **d))
 
-    keys = {(q[0], q[7], q[8], q[9]) for q in fixed}
+    out_rows, seen = [], set()
+    fixed_ids = {(q[7], q[8]) for q, _ in fixed}
+
+    def emit(q):
+        k = " ".join(q)
+        if k not in seen:
+            seen.add(k)
+            out_rows.append(q)
+
+    for q, old_crs in fixed:
+        emit(q)
+        for c in companions(q, old_crs, comp):
+            emit(c)
+    # Unfixed localizers that share an ident with a fixed one would be dropped too.
+    fixed_keys = {(q[0], q[7], q[8], q[10]) for q, _ in fixed}
+    for k in sorted(fixed_ids):
+        for c in comp.get(k, ()):
+            if c[0] in ("4", "5") and (c[0], c[7], c[8], c[10]) not in fixed_keys:
+                emit(c)
+    keys = {(q[0], q[7], q[8], q[9]) for q in out_rows}
     kept = []
     for l in existing:
         p = l.split()
@@ -347,7 +392,7 @@ def main():
         f.write("I\n%s\n\n" % header)
         for l in kept:
             f.write(l + "\n")
-        for q in fixed:
+        for q in out_rows:
             f.write(fmt_nav(q) + "\n")
         f.write("99\n")
     with open(sidecar_path(out), "w") as f:
