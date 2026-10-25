@@ -53,21 +53,26 @@ jobs:
           mkdir -p out/LocFixer/${{ matrix.plat }}
           cp build/LocFixer/${{ matrix.plat }}/LocFixer.xpl out/LocFixer/${{ matrix.plat }}/
           cp config.ini out/LocFixer/
-          if [ -f build/Release/locfix.exe ]; then cp build/Release/locfix.exe out/locfix-${{ matrix.plat }}.exe;
-          else cp build/locfix out/locfix-${{ matrix.plat }}; fi
+          mkdir -p out/cli
+          if [ -f build/Release/locfix.exe ]; then cp build/Release/locfix.exe out/cli/locfix-${{ matrix.plat }}.exe;
+          else cp build/locfix out/cli/locfix-${{ matrix.plat }}; fi
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.plat }}
+          name: part-${{ matrix.plat }}
           path: out/
 
   package:
     needs: build
     runs-on: ubuntu-22.04
+    permissions:
+      actions: write   # delete the per-platform part-* artifacts
+      contents: write  # publish releases on v* tags
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          pattern: part-*
           path: parts
       - name: Merge into one plugin folder
         run: |
@@ -75,14 +80,31 @@ jobs:
           for p in parts/*/; do cp -r "$p"/* dist/; done
           cp README.md LICENSE dist/LocFixer/
           ls -R dist
+      # GitHub zips an artifact as <name>.zip around the path's contents, so
+      # uploading the folder's contents makes "LocFixer.zip" unpack straight
+      # into a drop-in LocFixer plugin folder.
       - uses: actions/upload-artifact@v4
         with:
           name: LocFixer
-          path: dist/
+          path: dist/LocFixer/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: locfix-cli
+          path: dist/cli/
+      - uses: geekyeggo/delete-artifact@v5
+        with:
+          name: part-*
+          failOnError: false
       - name: Zip for release
         if: startsWith(github.ref, 'refs/tags/v')
-        run: cd dist && zip -r ../LocFixer.zip .
+        run: |
+          cd dist
+          zip -r ../LocFixer.zip LocFixer
+          cp ../LICENSE cli/
+          (cd cli && zip -r ../../locfix-cli.zip .)
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/v')
         with:
-          files: LocFixer.zip
+          files: |
+            LocFixer.zip
+            locfix-cli.zip

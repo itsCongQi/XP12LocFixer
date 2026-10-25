@@ -18,13 +18,13 @@ There are two ways to use it:
 
 ### Install
 
-1. Download the build:
+1. Download `LocFixer.zip`:
    - From a [release](../../releases) if one exists, or
    - From **Actions** > latest **build** run on `main` > **Artifacts** >
      `LocFixer` (you need to be signed in to GitHub).
-2. Unzip it and copy the `LocFixer` folder into `X-Plane 12/Resources/plugins/`.
-   It contains `win_x64/`, `mac_x64/` (Intel and Apple Silicon) and `lin_x64/`,
-   plus `config.ini`.
+2. Extract it so you get a `LocFixer` folder, and copy that folder into
+   `X-Plane 12/Resources/plugins/`. It contains `win_x64/`, `mac_x64/` (Intel
+   and Apple Silicon) and `lin_x64/`, plus `config.ini`.
 3. Start X-Plane. The first start builds `Custom Data/user_nav.dat` (a few
    seconds) and shows a window asking you to **restart X-Plane once** so the
    sim loads it.
@@ -89,8 +89,8 @@ corrected data through `user_nav.dat`, which X-Plane reads at startup.
 ## Command line
 
 `loc_fixer.py` needs Python 3.8+ and nothing else. The `locfix` binary
-(`locfix-win_x64.exe`, `locfix-mac_x64`, `locfix-lin_x64` in the build
-artifact) takes the same options and gives byte-identical output. Don't run
+(`locfix-win_x64.exe`, `locfix-mac_x64`, `locfix-lin_x64` in the separate
+`locfix-cli` download) takes the same options and gives byte-identical output. Don't run
 it while the plugin is installed, because the plugin manages the same file.
 
 ```
