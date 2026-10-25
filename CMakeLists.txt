@@ -1,0 +1,45 @@
+cmake_minimum_required(VERSION 3.16)
+project(LocFixer CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+add_library(locfix_core STATIC src/locfix_core.cpp)
+set_target_properties(locfix_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# Command-line tool (same as loc_fixer.py)
+add_executable(locfix src/cli.cpp)
+target_link_libraries(locfix locfix_core)
+
+# X-Plane plugin, only when the SDK is available: -DXPSDK=/path/to/SDK
+set(XPSDK "" CACHE PATH "X-Plane SDK root (contains CHeaders/)")
+if(XPSDK)
+  add_library(LocFixer MODULE src/plugin.cpp)
+  target_link_libraries(LocFixer locfix_core)
+  target_include_directories(LocFixer PRIVATE ${XPSDK}/CHeaders/XPLM)
+  target_compile_definitions(LocFixer PRIVATE XPLM200 XPLM210 XPLM300 XPLM301 XPLM303)
+  set_target_properties(LocFixer PROPERTIES PREFIX "" SUFFIX ".xpl" OUTPUT_NAME "LocFixer"
+                        CXX_VISIBILITY_PRESET hidden)
+  if(WIN32)
+    target_compile_definitions(LocFixer PRIVATE IBM=1 APL=0 LIN=0 _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(LocFixer ${XPSDK}/Libraries/Win/XPLM_64.lib)
+    set(PLAT win_x64)
+  elseif(APPLE)
+    target_compile_definitions(LocFixer PRIVATE IBM=0 APL=1 LIN=0)
+    target_link_options(LocFixer PRIVATE -F${XPSDK}/Libraries/Mac -framework XPLM)
+    set(PLAT mac_x64)
+  else()
+    target_compile_definitions(LocFixer PRIVATE IBM=0 APL=0 LIN=1)
+    target_link_options(LocFixer PRIVATE -static-libstdc++ -static-libgcc)
+    set(PLAT lin_x64)
+  endif()
+  set_target_properties(LocFixer PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/LocFixer/${PLAT}
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/LocFixer/${PLAT})
+endif()
