@@ -65,10 +65,13 @@ void discover(const std::string &xp_root, std::string &nav, std::vector<std::str
 
 // Where a pre-existing hand-made user_nav.dat is kept.
 std::string original_path(const std::string &out_path);
-// True if the file was written by us.
+// True if the file was written by us (checked against the user_nav.locfixer
+// sidecar next to it).
 bool is_ours(const std::string &path);
+void mark_ours(const std::string &path);
+void unmark(const std::string &path);
 
-// Marker written on line 2 of generated files.
+// Marker 1.0.0 wrote into the header; still recognised.
 extern const char *kMarker;
 
 std::vector<std::string> split_ws(const std::string &s);

@@ -30,7 +30,7 @@
 
 namespace fs = std::filesystem;
 
-#define PLUGIN_VERSION "1.0.0"
+#define PLUGIN_VERSION "1.0.1"
 
 static std::string g_xp_root, g_plugin_root, g_user_nav, g_report, g_state_path;
 static locfix::Params g_params;
@@ -328,6 +328,7 @@ static void remove_fix() {
     if (g_busy) return;
     std::error_code ec;
     if (locfix::is_ours(g_user_nav)) fs::remove(g_user_nav, ec);
+    locfix::unmark(g_user_nav);
     std::string orig = locfix::original_path(g_user_nav);
     if (fs::exists(orig, ec)) fs::rename(orig, g_user_nav, ec);
     g_state["disabled"] = "1";
