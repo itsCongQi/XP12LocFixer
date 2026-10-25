@@ -7,7 +7,9 @@ the scenery actually draws (apt.dat row type 100), then writes a
 Custom Data/user_nav.dat in which each runway-paired localizer is moved
 sideways onto the scenery runway's extended centerline and its course is set
 to the scenery runway's true heading. The LOC keeps its along-track distance
-from the runway, so only the lateral error is removed.
+from the runway, so only the lateral error is removed. The glideslope and DME
+of each corrected ILS are written too, because X-Plane drops stock entries
+that share a corrected localizer's ident and airport.
 
 Localizers are left alone (and listed in the report) when:
   * they are not straight-in (LDA, SDF, IGS, or an intentionally offset course),
