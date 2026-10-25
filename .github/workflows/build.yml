@@ -73,7 +73,7 @@ jobs:
         run: |
           mkdir -p dist
           for p in parts/*/; do cp -r "$p"/* dist/; done
-          cp README.md dist/LocFixer/
+          cp README.md LICENSE dist/LocFixer/
           ls -R dist
       - uses: actions/upload-artifact@v4
         with:
