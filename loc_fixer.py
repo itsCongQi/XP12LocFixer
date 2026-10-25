@@ -28,6 +28,7 @@ import argparse
 import csv
 import math
 import os
+import shutil
 import sys
 
 # WGS84 local radii are plenty for distances of a few km.
@@ -269,17 +270,21 @@ def main():
         n = read_apt_runways(p, rwys)
         print("apt.dat: %s (%d airport keys)" % (p, n))
 
-    # Keep any hand-made entries already in user_nav.dat that we are not replacing.
+    # A user_nav.dat we didn't write is moved aside to user_nav_original.dat
+    # once; its entries are merged into every run unless we replace the same
+    # localizer. Put hand-made navaids there.
     existing = []
-    if os.path.isfile(out):
+    orig = os.path.join(os.path.dirname(os.path.abspath(out)), "user_nav_original.dat")
+    if os.path.isfile(out) and not os.path.exists(orig):
         with open(out, "r", encoding="utf-8", errors="replace") as f:
+            head = [f.readline() for _ in range(3)]
+        if not any("loc_fixer" in l for l in head):
+            shutil.copyfile(out, orig)
+            print("moved your existing user_nav.dat entries to %s (they are merged in)" % orig)
+    if os.path.isfile(orig):
+        with open(orig, "r", encoding="utf-8", errors="replace") as f:
             lines = f.read().splitlines()
-        if not any("loc_fixer" in l for l in lines[:3]):
-            bak = out + ".bak"
-            if not os.path.exists(bak):
-                os.replace(out, bak)
-                print("backed up existing %s -> %s" % (out, bak))
-            existing = [l for l in lines[2:] if l.strip() and l.split()[0] not in ("99",)]
+        existing = [l for l in lines[2:] if l.strip() and l.split()[0] != "99"]
 
     fixed, rows, counts = [], [], {}
     header = ""
@@ -325,7 +330,7 @@ def main():
     print("\nresults:")
     for k in sorted(counts):
         print("  %-14s %d" % (k, counts[k]))
-    print("\nwrote %s (%d fixed, %d existing entries kept)" % (out, len(fixed), len(kept)))
+    print("\nwrote %s (%d fixed, %d hand-made entries kept)" % (out, len(fixed), len(kept)))
     print("wrote %s" % report)
 
 

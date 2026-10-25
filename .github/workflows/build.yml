@@ -1,0 +1,88 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            plat: lin_x64
+          - os: windows-2022
+            plat: win_x64
+          - os: macos-14
+            plat: mac_x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get X-Plane SDK
+        shell: bash
+        run: |
+          for v in 411 410 401; do
+            if curl -fsSL -o sdk.zip "https://developer.x-plane.com/wp-content/plugins/code-sample-generation/sdk_zip_files/XPSDK$v.zip"; then
+              echo "using XPSDK$v"; break
+            fi
+          done
+          unzip -q sdk.zip -d sdk_unzip
+          SDK=$(dirname "$(find sdk_unzip -type d -name CHeaders | head -1)")
+          echo "XPSDK=$PWD/$SDK" >> "$GITHUB_ENV"
+
+      - name: Configure
+        shell: bash
+        run: |
+          EXTRA=""
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            EXTRA="-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15"
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DXPSDK="$XPSDK" $EXTRA
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir -p out/LocFixer/${{ matrix.plat }}
+          cp build/LocFixer/${{ matrix.plat }}/LocFixer.xpl out/LocFixer/${{ matrix.plat }}/
+          cp config.ini out/LocFixer/
+          if [ -f build/Release/locfix.exe ]; then cp build/Release/locfix.exe out/locfix-${{ matrix.plat }}.exe;
+          else cp build/locfix out/locfix-${{ matrix.plat }}; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.plat }}
+          path: out/
+
+  package:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: parts
+      - name: Merge into one plugin folder
+        run: |
+          mkdir -p dist
+          for p in parts/*/; do cp -r "$p"/* dist/; done
+          cp README.md dist/LocFixer/
+          ls -R dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocFixer
+          path: dist/
+      - name: Zip for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cd dist && zip -r ../LocFixer.zip .
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: LocFixer.zip
