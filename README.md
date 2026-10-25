@@ -173,3 +173,10 @@ cmake --build build --config Release
 Without `-DXPSDK` only the `locfix` CLI is built. CI builds Windows, Mac
 (universal) and Linux on every push and pull request. Push a `v*` tag to
 publish a release zip.
+
+## License
+
+[MIT](LICENSE). Free to use, modify and redistribute, including commercially,
+as long as the copyright notice is kept. No code is taken from libradio
+(CDDL); only the general idea of snapping localizers to the runway is shared.
+The X-Plane SDK used to build the plugin is not included in this repository.
