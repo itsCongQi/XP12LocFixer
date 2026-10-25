@@ -229,6 +229,41 @@ def fix_loc(p, rwys, a):
     return ("fixed_review" if big else "fixed"), d, q
 
 
+# X-Plane rejects a user_nav.dat whose header isn't exactly the XPNAV1200
+# "data cycle ..., build ..., metadata NavXP1200" line, so the source header is
+# copied verbatim and ownership is recorded in a sidecar file (same format as
+# the plugin's).
+def sidecar_path(path):
+    return os.path.join(os.path.dirname(os.path.abspath(path)), "user_nav.locfixer")
+
+
+def file_hash(path):
+    h, size = 1469598103934665603, 0
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(1 << 16)
+            if not b:
+                break
+            size += len(b)
+            for c in b:
+                h = ((h ^ c) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return "%d %016x" % (size, h)
+
+
+def is_ours(path):
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(sidecar_path(path)) as f:
+            if f.readline().strip() == file_hash(path):
+                return True
+    except OSError:
+        pass
+    # Files from 1.0.0 carried the marker in the header (which X-Plane rejected).
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        return any("loc_fixer" in f.readline() for _ in range(3))
+
+
 def fmt_nav(q):
     # Keep the XPNAV1200 column look; X-Plane only needs whitespace separation.
     return "%2s %13s %14s %8s %8s %5s %11s %s %s %s %s %s" % (
@@ -275,10 +310,7 @@ def main():
     # localizer. Put hand-made navaids there.
     existing = []
     orig = os.path.join(os.path.dirname(os.path.abspath(out)), "user_nav_original.dat")
-    if os.path.isfile(out) and not os.path.exists(orig):
-        with open(out, "r", encoding="utf-8", errors="replace") as f:
-            head = [f.readline() for _ in range(3)]
-        if not any("loc_fixer" in l for l in head):
+    if os.path.isfile(out) and not os.path.exists(orig) and not is_ours(out):
             shutil.copyfile(out, orig)
             print("moved your existing user_nav.dat entries to %s (they are merged in)" % orig)
     if os.path.isfile(orig):
@@ -312,13 +344,14 @@ def main():
 
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8", newline="\n") as f:
-        f.write("I\n1200 Version - loc_fixer: %d localizers aligned to scenery. Source: %s\n\n"
-                % (len(fixed), header[:120]))
+        f.write("I\n%s\n\n" % header)
         for l in kept:
             f.write(l + "\n")
         for q in fixed:
             f.write(fmt_nav(q) + "\n")
         f.write("99\n")
+    with open(sidecar_path(out), "w") as f:
+        f.write(file_hash(out) + "\n")
 
     cols = ["status", "type", "ident", "airport", "region", "rwy", "name", "lat", "lon", "true_crs",
             "rwy_crs", "d_crs", "cross_m", "thr_miss_m", "along_m", "rwy_len", "new_lat", "new_lon"]

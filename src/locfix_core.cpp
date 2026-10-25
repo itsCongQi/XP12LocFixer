@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -230,12 +231,54 @@ std::string original_path(const std::string &out_path) {
     return (fs::path(out_path).parent_path() / "user_nav_original.dat").string();
 }
 
+// X-Plane rejects a user_nav.dat whose header isn't exactly the XPNAV1200
+// "data cycle ..., build ..., metadata NavXP1200" line, so we copy the source
+// header verbatim and record ownership in a sidecar file instead.
+static std::string sidecar_path(const std::string &path) {
+    return (fs::path(path).parent_path() / "user_nav.locfixer").string();
+}
+
+static std::string file_hash(const std::string &path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return "";
+    uint64_t h = 1469598103934665603ULL;  // FNV-1a 64
+    char buf[65536];
+    unsigned long long size = 0;
+    while (f.read(buf, sizeof buf) || f.gcount() > 0) {
+        std::streamsize n = f.gcount();
+        for (std::streamsize i = 0; i < n; i++) {
+            h ^= (unsigned char)buf[i];
+            h *= 1099511628211ULL;
+        }
+        size += (unsigned long long)n;
+    }
+    char out[64];
+    std::snprintf(out, sizeof out, "%llu %016llx", size, (unsigned long long)h);
+    return out;
+}
+
 bool is_ours(const std::string &path) {
+    std::error_code ec;
+    if (!fs::exists(path, ec)) return false;
+    std::ifstream side(sidecar_path(path));
+    std::string recorded;
+    if (std::getline(side, recorded) && !recorded.empty() && recorded == file_hash(path)) return true;
+    // Files from 1.0.0 carried the marker in the header (which X-Plane rejected).
     std::ifstream f(path, std::ios::binary);
     std::string line;
     for (int i = 0; i < 3 && std::getline(f, line); i++)
         if (line.find(kMarker) != std::string::npos) return true;
     return false;
+}
+
+void mark_ours(const std::string &path) {
+    std::ofstream side(sidecar_path(path));
+    side << file_hash(path) << "\n";
+}
+
+void unmark(const std::string &path) {
+    std::error_code ec;
+    fs::remove(sidecar_path(path), ec);
 }
 
 RunSummary run(const std::string &nav_path, const std::vector<std::string> &apt_paths,
@@ -302,8 +345,8 @@ RunSummary run(const std::string &nav_path, const std::vector<std::string> &apt_
     {
         std::ofstream o(tmp, std::ios::binary);
         if (!o) { s.error = "cannot write " + tmp; return s; }
-        o << "I\n1200 Version - " << kMarker << ": " << s.fixed << " localizers aligned to scenery. "
-          << tag << " Source: " << header.substr(0, 120) << "\n\n";
+        (void)tag;
+        o << "I\n" << header << "\n\n";
         for (auto &l : kept) o << l << "\n";
         for (auto &r : s.results)
             if (r.fixed()) o << fmt_nav(r) << "\n";
@@ -316,6 +359,7 @@ RunSummary run(const std::string &nav_path, const std::vector<std::string> &apt_
         fs::rename(tmp, out_path, ec);
         if (ec) { s.error = "cannot replace " + out_path; return s; }
     }
+    mark_ours(out_path);
 
     if (!report_path.empty()) {
         std::ofstream c(report_path, std::ios::binary);
