@@ -79,7 +79,11 @@ that is still off the centerline, so it crosses the runway at an angle and is
 only right at one point. Moving it onto the line and matching the heading makes
 the beam *be* the centerline.
 
-Glideslopes and DMEs are not moved; a few metres sideways doesn't affect them.
+The glideslope and DME of each corrected ILS are written to `user_nav.dat`
+too. X-Plane treats a `user_nav.dat` localizer as replacing the whole ILS
+(every row with that ident at that airport), so leaving them out would delete
+them. They keep their real positions. Only the glideslope's course is updated
+to match the new localizer course.
 
 ## What it leaves alone
 

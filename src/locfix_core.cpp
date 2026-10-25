@@ -199,19 +199,54 @@ LocResult fix_loc(const std::vector<std::string> &p, const RunwayDb &db, const P
     return r;
 }
 
-static std::string fmt_nav(const LocResult &r) {
-    const auto &q = r.fields;
-    char lat[32], lon[32], brg[32];
-    std::snprintf(lat, sizeof lat, "%.9f", r.new_lat);
-    std::snprintf(lon, sizeof lon, "%.9f", r.new_lon);
-    std::snprintf(brg, sizeof brg, "%.3f", r.new_brg_field);
+static std::string fmt_row(const std::vector<std::string> &q) {
+    // Keep the XPNAV1200 column look; X-Plane only needs whitespace separation.
     std::string rest;
-    for (size_t i = 11; i < q.size(); i++) rest += (i > 11 ? " " : "") + q[i];
+    for (size_t i = 7; i < q.size(); i++) rest += (i > 7 ? " " : "") + q[i];
     char buf[512];
-    std::snprintf(buf, sizeof buf, "%2s %13s %14s %8s %8s %5s %11s %s %s %s %s %s", q[0].c_str(), lat,
-                  lon, q[3].c_str(), q[4].c_str(), q[5].c_str(), brg, q[7].c_str(), q[8].c_str(),
-                  q[9].c_str(), q[10].c_str(), rest.c_str());
+    std::snprintf(buf, sizeof buf, "%2s %13s %14s %8s %8s %5s %11s %s", q[0].c_str(), q[1].c_str(),
+                  q[2].c_str(), q[3].c_str(), q[4].c_str(), q[5].c_str(), q[6].c_str(), rest.c_str());
     return buf;
+}
+
+static std::vector<std::string> fixed_fields(const LocResult &r) {
+    std::vector<std::string> q = r.fields;
+    char b[32];
+    std::snprintf(b, sizeof b, "%.9f", r.new_lat);
+    q[1] = b;
+    std::snprintf(b, sizeof b, "%.9f", r.new_lon);
+    q[2] = b;
+    std::snprintf(b, sizeof b, "%.3f", r.new_brg_field);
+    q[6] = b;
+    return q;
+}
+
+using CompanionDb = std::map<std::string, std::vector<std::vector<std::string>>>;
+
+// An ILS's localizer, glideslope and DME share an ident and airport (some
+// airports reuse one ident for both runway ends). When user_nav.dat redefines
+// the localizer, X-Plane drops the stock rows with that ident and airport, so
+// we re-emit them. The glideslope's course (its bearing
+// field is angle * 100000 + true course) follows the new LOC course.
+static std::vector<std::vector<std::string>> companions(const LocResult &r, const CompanionDb &comp) {
+    std::vector<std::vector<std::string>> out;
+    auto it = comp.find(r.fields[7] + "|" + r.fields[8]);
+    if (it == comp.end()) return out;
+    double new_crs = std::fmod(r.new_brg_field, 360.0);
+    for (auto c : it->second) {
+        if (c[0] == "4" || c[0] == "5") continue;  // localizers are emitted on their own
+        double field;
+        if (c[0] == "6" && to_d(c[6], field)) {
+            double angle_part = std::floor(field / 1000.0) * 1000.0;
+            if (std::fabs(wrap180(field - angle_part - r.true_crs)) <= 1.0) {
+                char b[32];
+                std::snprintf(b, sizeof b, "%.3f", angle_part + new_crs);
+                c[6] = b;
+            }
+        }
+        out.push_back(c);
+    }
+    return out;
 }
 
 static std::string csv_field(const std::string &s) {
@@ -294,11 +329,16 @@ RunSummary run(const std::string &nav_path, const std::vector<std::string> &apt_
     std::getline(nf, line);
     std::getline(nf, header);
     while (!header.empty() && (header.back() == '\r' || header.back() == ' ')) header.pop_back();
+    CompanionDb comp;
     while (std::getline(nf, line)) {
         if (line.size() < 2) continue;
         size_t i = line.find_first_not_of(" \t");
-        if (i == std::string::npos || (line[i] != '4' && line[i] != '5')) continue;
+        if (i == std::string::npos) continue;
+        char c0 = line[i];
+        if (c0 != '4' && c0 != '5' && c0 != '6' && c0 != '1') continue;
         auto f = split_ws(line);
+        if (f.size() >= 11 && (f[0] == "4" || f[0] == "5" || f[0] == "6" || f[0] == "12" || f[0] == "13"))
+            comp[f[7] + "|" + f[8]].push_back(f);
         if (f.size() < 12 || (f[0] != "4" && f[0] != "5")) continue;
         s.results.push_back(fix_loc(f, db, p));
         s.counts[s.results.back().status]++;
@@ -326,12 +366,28 @@ RunSummary run(const std::string &nav_path, const std::vector<std::string> &apt_
         }
     }
 
-    std::set<std::string> keys;
+    std::vector<std::vector<std::string>> out_rows;
+    std::set<std::string> seen, fixed_ids, fixed_keys;
+    auto emit = [&](const std::vector<std::string> &q) {
+        std::string k;
+        for (auto &x : q) k += x + " ";
+        if (seen.insert(k).second) out_rows.push_back(q);
+    };
     for (auto &r : s.results)
         if (r.fixed()) {
-            keys.insert(r.fields[0] + "|" + r.fields[7] + "|" + r.fields[8] + "|" + r.fields[9]);
+            emit(fixed_fields(r));
+            for (auto &c : companions(r, comp)) emit(c);
+            fixed_ids.insert(r.fields[7] + "|" + r.fields[8]);
+            fixed_keys.insert(r.fields[0] + "|" + r.fields[7] + "|" + r.fields[8] + "|" + r.fields[10]);
             s.fixed++;
         }
+    // Unfixed localizers that share an ident with a fixed one would be dropped too.
+    for (auto &k : fixed_ids)
+        for (auto &c : comp[k])
+            if ((c[0] == "4" || c[0] == "5") && !fixed_keys.count(c[0] + "|" + c[7] + "|" + c[8] + "|" + c[10]))
+                emit(c);
+    std::set<std::string> keys;
+    for (auto &q : out_rows) keys.insert(q[0] + "|" + q[7] + "|" + q[8] + "|" + q[9]);
     std::vector<std::string> kept;
     for (auto &l : existing) {
         auto f = split_ws(l);
@@ -348,8 +404,7 @@ RunSummary run(const std::string &nav_path, const std::vector<std::string> &apt_
         (void)tag;
         o << "I\n" << header << "\n\n";
         for (auto &l : kept) o << l << "\n";
-        for (auto &r : s.results)
-            if (r.fixed()) o << fmt_nav(r) << "\n";
+        for (auto &q : out_rows) o << fmt_row(q) << "\n";
         o << "99\n";
         if (!o) { s.error = "write failed " + tmp; return s; }
     }
