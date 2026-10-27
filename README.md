@@ -67,6 +67,10 @@ Every message is also written to `Log.txt` on lines starting with `LOC Fixer:`.
 | `max_beyond` | 2500 | Skip if the LOC is further than this past the far runway end (metres). |
 | `min_fix` | 0.5 | Leave alone if already within this many metres. |
 | `skip_types` | `LDA, SDF, IGS` | Approach types that are deliberately not aligned with the runway. |
+| `use_cifp` | 1 | Check each LOC against the real runway from the navdata's CIFP folder and leave intentionally offset ones alone (see below). 0 turns it off. |
+| `real_offset` | 15 | Offset if the LOC, or where its beam crosses the threshold, is further than this from the real centerline (metres). |
+| `real_angle` | 0.5 | Offset if the LOC course differs from the real runway by more (degrees). |
+| `skip_ids` | `RJBT ITH` | Localizers never to touch, as `AIRPORT IDENT`, comma separated. |
 
 A per-localizer report is written to `LocFixer/report.csv`.
 
@@ -110,6 +114,9 @@ python loc_fixer.py --nav earth_nav.dat --apt my_airport/apt.dat --apt global/ap
 | `--report FILE` | CSV report. Default `user_nav_report.csv` next to the output. |
 | `--max-angle`, `--max-offset`, `--review-offset`, `--max-beyond`, `--min-fix` | Same as the plugin settings above. |
 | `--include-types LIST` | Comma list of normally skipped types to align anyway, e.g. `IGS`. |
+| `--cifp DIR` | CIFP folder with the real runway thresholds. Default: the `CIFP` folder next to the `earth_nav.dat` in use. `none` turns the check off. |
+| `--real-offset`, `--real-angle` | Same as the plugin settings above. |
+| `--skip-ids LIST` | Comma list of `AIRPORT IDENT` localizers never to touch, e.g. `"RJBT ITH"`. |
 
 Re-run it after adding, removing or reordering scenery, or updating navdata,
 then restart X-Plane.
@@ -148,12 +155,40 @@ glideslope's course is updated to match the new localizer course.
 | status | meaning |
 |---|---|
 | `skip_type` | LDA, SDF, IGS: deliberately not aligned with the runway. |
+| `skip_real_offset` | The stock LOC is off the *real* runway centerline (from CIFP) by more than 15 m or 0.5°, so the offset is part of the real procedure. |
+| `skip_listed` | Listed in `skip_ids`. |
 | `skip_angle` | Course differs from the runway by > 1° (offset approaches, or a wrong scenery runway). |
 | `skip_offset` | LOC or its threshold crossing is > 100 m off the scenery centerline. Usually the scenery runway is misplaced (the LIML-style case), so "fixing" it would send you somewhere bogus. |
 | `skip_position` | LOC isn't beyond the far end of the runway, where it should be. |
 | `no_airport` / `no_runway` | Scenery doesn't have that airport or runway (often a renamed runway). |
 | `ok` | Already within 0.5 m. |
 | `fixed_review` | Fixed, but the shift was > 30 m; worth a look. |
+
+### Intentionally offset localizers
+
+Some localizers are deliberately not on the runway centerline. RJBT (Tajima)
+01 is one: the LOC sits about 30 m east of the runway and its beam stays
+parallel, which the chart notes as "Loc Crs offset". `earth_nav.dat` and
+`apt.dat` alone can't tell that apart from a scenery error, because the
+scenery runway is where the real one is and the LOC is simply off it.
+
+The navdata's CIFP files can. Every `earth_nav.dat` comes with a `CIFP` folder
+(`Custom Data/CIFP` for Navigraph, `Resources/default data/CIFP` for the
+stock data) with one file per airport, and its `RWY:` records give the real
+landing thresholds. Before aligning a LOC, the tools measure it against the
+real centerline between the two thresholds:
+
+* on the real centerline: the navdata is right and the scenery is off, so it
+  is aligned as usual;
+* more than `real_offset` m (LOC or threshold crossing) or `real_angle`
+  degrees off: the offset is real, so it is left alone as `skip_real_offset`;
+* no CIFP file or runway: the scenery checks above still apply.
+
+For RJBT 01 the LOC is 30.1 m off the real centerline (30.4 m at the
+threshold) while the scenery runway is within 3.4 m of the real one, so it is
+skipped. The report has `real_d_crs`, `real_cross_m` and `real_thr_miss_m`
+columns for every localizer that has CIFP data. Anything the CIFP check
+misses can be added to `skip_ids`.
 
 ## Results on the stock data (cycle 2608, global apt.dat)
 

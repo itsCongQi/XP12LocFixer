@@ -5,6 +5,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace locfix {
@@ -16,7 +17,14 @@ struct Params {
     double max_beyond = 2500.0;  // m, skip if LOC further past the far runway end
     double min_fix = 0.5;        // m, leave alone if already this close
     std::set<std::string> skip_names = {"LDA", "SDF", "IGS"};
+    std::set<std::string> skip_ids;  // "AIRPORT IDENT", e.g. "RJBT ITH": never touched
+    // Real runway thresholds from the navdata's CIFP/<ICAO>.dat. A stock LOC
+    // off the real centerline is intentionally offset and left alone.
+    std::string cifp_dir;        // empty: no check
+    double real_offset = 15.0;   // m
+    double real_angle = 0.5;     // deg
 };
+
 
 struct RunwayEnd {
     double lat, lon, opp_lat, opp_lon;
@@ -24,6 +32,17 @@ struct RunwayEnd {
 
 // airport key (ident and 1302 icao_code) -> runway id (no leading zero) -> end
 using RunwayDb = std::map<std::string, std::map<std::string, RunwayEnd>>;
+
+// Real runway thresholds per airport, read from CIFP files on first use.
+class CifpDb {
+public:
+    explicit CifpDb(std::string dir) : dir_(std::move(dir)) {}
+    // Threshold of rwy and of its opposite end; false if unknown.
+    bool runway(const std::string &airport, const std::string &rwy, RunwayEnd &out);
+private:
+    std::string dir_;
+    std::map<std::string, std::map<std::string, std::pair<double, double>>> cache_;
+};
 
 // Add land runways from one apt.dat; airports already present (from a higher
 // priority file) are not overridden. Returns number of airport keys added,
@@ -39,10 +58,13 @@ struct LocResult {
     bool has_thr_miss = false;
     double thr_miss_m = 0;
     double new_lat = 0, new_lon = 0, new_brg_field = 0;
+    bool has_real = false, has_real_thr_miss = false;  // vs the CIFP runway
+    double real_d_crs = 0, real_cross_m = 0, real_thr_miss_m = 0;
     bool fixed() const { return status == "fixed" || status == "fixed_review"; }
 };
 
-LocResult fix_loc(const std::vector<std::string> &fields, const RunwayDb &db, const Params &p);
+LocResult fix_loc(const std::vector<std::string> &fields, const RunwayDb &db, const Params &p,
+                  CifpDb *cifp = nullptr);
 
 struct RunSummary {
     std::string error;            // non-empty on failure
@@ -62,6 +84,9 @@ RunSummary run(const std::string &nav_path, const std::vector<std::string> &apt_
 // Resources/default data/earth_nav.dat. apts: enabled packs from
 // scenery_packs.ini in order, then Global Airports.
 void discover(const std::string &xp_root, std::string &nav, std::vector<std::string> &apts);
+
+// CIFP folder that belongs to this earth_nav.dat (its sibling), or empty.
+std::string cifp_dir_for(const std::string &nav_path);
 
 // Where a pre-existing hand-made user_nav.dat is kept.
 std::string original_path(const std::string &out_path);

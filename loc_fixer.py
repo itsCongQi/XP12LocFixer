@@ -12,7 +12,12 @@ of each corrected ILS are written too, because X-Plane drops stock entries
 that share a corrected localizer's ident and airport.
 
 Localizers are left alone (and listed in the report) when:
-  * they are not straight-in (LDA, SDF, IGS, or an intentionally offset course),
+  * they are not straight-in (LDA, SDF, IGS),
+  * they are intentionally offset from the real runway: the navdata's CIFP
+    file for the airport (CIFP/<ICAO>.dat next to earth_nav.dat) gives the
+    real thresholds, and a LOC that is off that real centerline was put there
+    on purpose (RJBT 01, 30 m east), so it is not "fixed",
+  * they are listed in --skip-ids,
   * the runway or airport is not in the scenery,
   * the scenery and the navdata disagree by more than the thresholds, which
     usually means the scenery runway itself is misplaced (the LIML case), and
@@ -38,6 +43,7 @@ A = 6378137.0
 E2 = 6.69437999014e-3
 
 SKIP_NAMES = ("LDA", "SDF", "IGS")
+SKIP_IDS = set()        # {"RJBT ITH", ...}: airport + LOC ident, never touched
 
 
 def radii(lat):
@@ -158,6 +164,96 @@ def discover(xp):
 
 
 # --------------------------------------------------------------------------
+# CIFP: real runway thresholds, to recognise intentionally offset localizers
+# --------------------------------------------------------------------------
+
+def cifp_coord(s):
+    """N35302683 / E134471194 (hemisphere, deg, min, sec in 1/100) -> degrees."""
+    s = s.strip()
+    if len(s) not in (9, 10) or s[0] not in "NSEW" or not s[1:].isdigit():
+        return None
+    dw = 2 if s[0] in "NS" else 3
+    v = int(s[1:1 + dw]) + int(s[1 + dw:3 + dw]) / 60.0 + int(s[3 + dw:]) / 100.0 / 3600.0
+    return -v if s[0] in "SW" else v
+
+
+def opposite_rwy(r):
+    """'1' -> '19', '9L' -> '27R'; None if not a numbered runway."""
+    n = r.rstrip("LRC")
+    if not n.isdigit():
+        return None
+    o = (int(n) + 17) % 36 + 1
+    side = r[len(n):]
+    return str(o) + {"L": "R", "R": "L"}.get(side, side)
+
+
+def read_cifp_runways(path):
+    """{runway id (no leading zero): (lat, lon)} of the landing thresholds."""
+    out = {}
+    try:
+        f = open(path, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    with f:
+        for line in f:
+            if not line.startswith("RWY:"):
+                continue
+            parts = line.split(";")
+            if len(parts) < 2:
+                continue
+            rid = parts[0][4:].split(",")[0].strip().upper()
+            pos = parts[1].split(",")
+            if not rid.startswith("RW") or len(pos) < 2:
+                continue
+            lat, lon = cifp_coord(pos[0]), cifp_coord(pos[1])
+            if lat is not None and lon is not None:
+                out[norm_rwy(rid[2:])] = (lat, lon)
+    return out
+
+
+_cifp_cache = {}
+
+
+def real_runway(cifp_dir, airport, rwy):
+    """(thr_lat, thr_lon, far_lat, far_lon) of the real runway, or None."""
+    if not cifp_dir:
+        return None
+    if airport not in _cifp_cache:
+        _cifp_cache[airport] = read_cifp_runways(os.path.join(cifp_dir, airport + ".dat"))
+    r = _cifp_cache[airport]
+    o = opposite_rwy(rwy)
+    if rwy not in r or o not in r:
+        return None
+    return r[rwy] + r[o]
+
+
+def line_geom(tla, tlo, ola, olo, lat, lon, true_crs):
+    """LOC vs the centerline tla/tlo -> ola/olo: (rwy_crs, along, cross,
+    course difference, lateral miss where the beam crosses the threshold),
+    or None if the runway is degenerate."""
+    oe, on = to_en(tla, tlo, ola, olo)
+    rlen = math.hypot(oe, on)
+    if rlen < 50:
+        return None
+    ue, un = oe / rlen, on / rlen
+    rwy_crs = math.degrees(math.atan2(ue, un)) % 360
+    le, ln = to_en(tla, tlo, lat, lon)
+    along = le * ue + ln * un               # m past the approach end
+    cross = le * un - ln * ue               # + = LOC is right of centerline (looking along course)
+    dang = angdiff(rwy_crs, true_crs)
+    beam_ue = math.sin(math.radians(true_crs))
+    beam_un = math.cos(math.radians(true_crs))
+    # beam point at threshold-along-track 0: LOC - t*beam, solve along=0
+    denom = beam_ue * ue + beam_un * un
+    thr_miss = None
+    if abs(denom) > 1e-6:
+        t = along / denom
+        be, bn = le - t * beam_ue, ln - t * beam_un
+        thr_miss = be * un - bn * ue
+    return rwy_crs, rlen, ue, un, along, cross, dang, thr_miss
+
+
+# --------------------------------------------------------------------------
 # main logic
 # --------------------------------------------------------------------------
 
@@ -172,6 +268,22 @@ def fix_loc(p, rwys, a):
 
     if any(s in name.upper() for s in SKIP_NAMES):
         return "skip_type", d, None
+    if (airport + " " + p[7].upper()) in SKIP_IDS:
+        return "skip_listed", d, None
+
+    # Is the stock LOC on the real runway's centerline? If not, the offset is
+    # in the real procedure and must stay.
+    real = real_runway(a.cifp, airport, rwy)
+    if real:
+        g = line_geom(*real, lat, lon, true_crs)
+        if g:
+            _, _, _, _, _, rcross, rdang, rmiss = g
+            d.update(real_cross_m=round(rcross, 1), real_d_crs=round(rdang, 3),
+                     real_thr_miss_m=None if rmiss is None else round(rmiss, 1))
+            if abs(rdang) > a.real_angle or abs(rcross) > a.real_offset or \
+                    (rmiss is not None and abs(rmiss) > a.real_offset):
+                return "skip_real_offset", d, None
+
     if airport not in rwys:
         return "no_airport", d, None
     r = rwys[airport].get(rwy)
@@ -179,30 +291,12 @@ def fix_loc(p, rwys, a):
         return "no_runway", d, None
     tla, tlo, ola, olo, _ = r
 
-    # Centerline unit vector, from this runway's end toward the far end
-    # (the direction an aircraft on approach flies, i.e. the LOC course).
-    oe, on = to_en(tla, tlo, ola, olo)
-    rlen = math.hypot(oe, on)
-    if rlen < 50:
+    # Centerline from this runway's end toward the far end (the direction an
+    # aircraft on approach flies, i.e. the LOC course).
+    g = line_geom(tla, tlo, ola, olo, lat, lon, true_crs)
+    if g is None:
         return "bad_runway", d, None
-    ue, un = oe / rlen, on / rlen
-    rwy_crs = math.degrees(math.atan2(ue, un)) % 360
-
-    le, ln = to_en(tla, tlo, lat, lon)
-    along = le * ue + ln * un               # m past the approach end
-    cross = le * un - ln * ue               # + = LOC is right of centerline (looking along course)
-    dang = angdiff(rwy_crs, true_crs)
-    # Lateral miss at the threshold if you fly the LOC as published,
-    # relative to the scenery centerline.
-    beam_ue = math.sin(math.radians(true_crs))
-    beam_un = math.cos(math.radians(true_crs))
-    # beam point at threshold-along-track 0: LOC - t*beam, solve along=0
-    denom = beam_ue * ue + beam_un * un
-    thr_miss = None
-    if abs(denom) > 1e-6:
-        t = along / denom
-        be, bn = le - t * beam_ue, ln - t * beam_un
-        thr_miss = be * un - bn * ue
+    rwy_crs, rlen, ue, un, along, cross, dang, thr_miss = g
     d.update(rwy_crs=round(rwy_crs, 3), d_crs=round(dang, 3), cross_m=round(cross, 1),
              along_m=round(along, 0), rwy_len=round(rlen, 0),
              thr_miss_m=None if thr_miss is None else round(thr_miss, 1))
@@ -309,11 +403,16 @@ def main():
     ap.add_argument("--max-beyond", type=float, default=2500.0, help="skip if LOC is further than this past the far runway end (m, default 2500)")
     ap.add_argument("--min-fix", type=float, default=0.5, help="leave alone if already within this many metres (default 0.5)")
     ap.add_argument("--include-types", default="", help="comma list of names normally skipped to include anyway, e.g. IGS")
+    ap.add_argument("--skip-ids", default="", help='comma list of "AIRPORT IDENT" localizers to never touch, e.g. "RJBT ITH"')
+    ap.add_argument("--cifp", help="CIFP folder with real runway thresholds (default: CIFP next to earth_nav.dat); 'none' to disable")
+    ap.add_argument("--real-offset", type=float, default=15.0, help="skip as intentionally offset if the LOC or its threshold crossing is further than this from the real (CIFP) centerline (m, default 15)")
+    ap.add_argument("--real-angle", type=float, default=0.5, help="skip as intentionally offset if the LOC course differs from the real runway by more (deg, default 0.5)")
     a = ap.parse_args()
 
     global SKIP_NAMES
     inc = {s.strip().upper() for s in a.include_types.split(",") if s.strip()}
     SKIP_NAMES = tuple(s for s in SKIP_NAMES if s not in inc)
+    SKIP_IDS.update(" ".join(s.upper().split()) for s in a.skip_ids.split(",") if s.strip())
 
     nav, apts = a.nav, list(a.apt)
     if a.xplane:
@@ -322,10 +421,15 @@ def main():
         apts = apts or dapts
     if not nav or not apts:
         ap.error("need an earth_nav.dat and at least one apt.dat (use --xplane or --nav/--apt)")
+    if a.cifp is None:
+        a.cifp = os.path.join(os.path.dirname(os.path.abspath(nav)), "CIFP")
+    if a.cifp.lower() == "none" or not os.path.isdir(a.cifp):
+        a.cifp = None
     out = a.out or (os.path.join(a.xplane, "Custom Data", "user_nav.dat") if a.xplane else "user_nav.dat")
     report = a.report or os.path.splitext(out)[0] + "_report.csv"
 
     print("navdata: %s" % nav)
+    print("CIFP:    %s" % (a.cifp or "(none, offset localizers only caught by the scenery checks)"))
     rwys = {}
     for p in apts:
         n = read_apt_runways(p, rwys)
@@ -401,7 +505,8 @@ def main():
         f.write(file_hash(out) + "\n")
 
     cols = ["status", "type", "ident", "airport", "region", "rwy", "name", "lat", "lon", "true_crs",
-            "rwy_crs", "d_crs", "cross_m", "thr_miss_m", "along_m", "rwy_len", "new_lat", "new_lon"]
+            "rwy_crs", "d_crs", "cross_m", "thr_miss_m", "along_m", "rwy_len", "new_lat", "new_lon",
+            "real_d_crs", "real_cross_m", "real_thr_miss_m"]
     with open(report, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
