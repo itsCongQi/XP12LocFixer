@@ -30,7 +30,7 @@
 
 namespace fs = std::filesystem;
 
-#define PLUGIN_VERSION "1.0.2"
+#define PLUGIN_VERSION "1.1.0"
 
 static std::string g_xp_root, g_plugin_root, g_user_nav, g_report, g_state_path;
 static locfix::Params g_params;
@@ -76,6 +76,8 @@ static void save_state() {
     for (auto &kv : g_state) f << kv.first << " = " << kv.second << "\n";
 }
 
+static bool g_use_cifp = true;
+
 static void load_config() {
     std::map<std::string, std::string> c;
     load_kv((fs::path(g_plugin_root) / "config.ini").string(), c);
@@ -87,6 +89,20 @@ static void load_config() {
     num("review_offset", g_params.review_offset);
     num("max_beyond", g_params.max_beyond);
     num("min_fix", g_params.min_fix);
+    num("real_offset", g_params.real_offset);
+    num("real_angle", g_params.real_angle);
+    g_use_cifp = !c.count("use_cifp") || std::atoi(c["use_cifp"].c_str()) != 0;
+    if (c.count("skip_ids")) {
+        g_params.skip_ids.clear();
+        std::stringstream ss(c["skip_ids"]);
+        std::string t;
+        while (std::getline(ss, t, ',')) {
+            std::string id;
+            for (auto &w : locfix::split_ws(t)) id += (id.empty() ? "" : " ") + w;
+            for (auto &ch : id) ch = (char)std::toupper((unsigned char)ch);
+            if (!id.empty()) g_params.skip_ids.insert(id);
+        }
+    }
     if (c.count("skip_types")) {
         g_params.skip_names.clear();
         std::stringstream ss(c["skip_types"]);
@@ -113,6 +129,11 @@ static std::string fingerprint(const std::string &nav, const std::vector<std::st
     s << PLUGIN_VERSION << ";" << g_params.max_angle << ";" << g_params.max_offset << ";"
       << g_params.review_offset << ";" << g_params.max_beyond << ";" << g_params.min_fix << ";";
     for (auto &n : g_params.skip_names) s << n << ",";
+    s << ";" << g_use_cifp << ";" << g_params.real_offset << ";" << g_params.real_angle << ";";
+    for (auto &n : g_params.skip_ids) s << n << ",";
+    // CIFP files ship with the navdata, so a navdata update already changes
+    // the earth_nav.dat signature; only the folder's presence is tracked here.
+    s << ";" << (g_use_cifp ? locfix::cifp_dir_for(nav) : "");
     s << ";" << file_sig(nav);
     for (auto &a : apts) s << ";" << file_sig(a);
     std::string orig = locfix::original_path(g_user_nav);
@@ -129,6 +150,7 @@ static locfix::RunSummary generate() {
     locfix::RunSummary s;
     if (nav.empty()) { s.error = "earth_nav.dat not found"; return s; }
     if (apts.empty()) { s.error = "no apt.dat found"; return s; }
+    g_params.cifp_dir = g_use_cifp ? locfix::cifp_dir_for(nav) : "";
     s = locfix::run(nav, apts, g_user_nav, g_report, g_params, "(plugin " PLUGIN_VERSION ")");
     if (s.error.empty()) {
         g_state["fingerprint"] = fingerprint(nav, apts);
@@ -231,6 +253,12 @@ static void verify_and_report(const locfix::RunSummary *s) {
             if (kv.first.rfind("skip_", 0) == 0) skipped += kv.second;
         std::snprintf(b, sizeof b, "%d left alone (offset approaches or scenery too far off).", skipped);
         lines.push_back(b);
+        auto cnt = [&](const char *k) { auto i = s->counts.find(k); return i == s->counts.end() ? 0 : i->second; };
+        if (cnt("skip_real_offset") || cnt("skip_listed")) {
+            std::snprintf(b, sizeof b, "  of which intentionally offset: %d from CIFP, %d from skip_ids.",
+                          cnt("skip_real_offset"), cnt("skip_listed"));
+            lines.push_back(b);
+        }
     }
     std::string detail;
     Applied a = check_applied(detail);

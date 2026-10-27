@@ -1,6 +1,7 @@
 // Port of loc_fixer.py. Keep the two in step.
 #include "locfix_core.h"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
@@ -136,7 +137,96 @@ int read_apt_runways(const std::string &path, RunwayDb &db) {
     return (int)added.size();
 }
 
-LocResult fix_loc(const std::vector<std::string> &p, const RunwayDb &db, const Params &a) {
+// "N35302683" / "E134471194": hemisphere, degrees, minutes, seconds in 1/100.
+static bool cifp_coord(std::string s, double &v) {
+    auto w = split_ws(s);
+    if (w.size() != 1) return false;
+    s = w[0];
+    if ((s.size() != 9 && s.size() != 10) || std::string("NSEW").find(s[0]) == std::string::npos) return false;
+    for (size_t i = 1; i < s.size(); i++)
+        if (!std::isdigit((unsigned char)s[i])) return false;
+    size_t dw = (s[0] == 'N' || s[0] == 'S') ? 2 : 3;
+    v = std::atoi(s.substr(1, dw).c_str()) + std::atoi(s.substr(1 + dw, 2).c_str()) / 60.0 +
+        std::atoi(s.substr(3 + dw).c_str()) / 100.0 / 3600.0;
+    if (s[0] == 'S' || s[0] == 'W') v = -v;
+    return true;
+}
+
+// "1" -> "19", "9L" -> "27R"; empty if not a numbered runway.
+static std::string opposite_rwy(const std::string &r) {
+    size_t n = r.find_last_not_of("LRC") + 1;
+    std::string num = r.substr(0, n), side = r.substr(n);
+    if (num.empty()) return "";
+    for (char ch : num)
+        if (!std::isdigit((unsigned char)ch)) return "";
+    if (side == "L") side = "R";
+    else if (side == "R") side = "L";
+    return std::to_string((std::atoi(num.c_str()) + 17) % 36 + 1) + side;
+}
+
+bool CifpDb::runway(const std::string &airport, const std::string &rwy, RunwayEnd &out) {
+    if (dir_.empty()) return false;
+    auto it = cache_.find(airport);
+    if (it == cache_.end()) {
+        auto &m = cache_[airport];
+        std::ifstream f(fs::path(dir_) / (airport + ".dat"), std::ios::binary);
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.rfind("RWY:", 0) != 0) continue;
+            size_t semi = line.find(';');
+            if (semi == std::string::npos) continue;
+            std::string id = line.substr(4, line.find(',') == std::string::npos ? semi - 4 : line.find(',') - 4);
+            id.erase(id.find_last_not_of(' ') + 1);
+            id = upper(id);
+            std::string pos = line.substr(semi + 1);
+            size_t c1 = pos.find(','), c2 = c1 == std::string::npos ? c1 : pos.find(',', c1 + 1);
+            double la, lo;
+            if (id.rfind("RW", 0) != 0 || c1 == std::string::npos) continue;
+            if (!cifp_coord(pos.substr(0, c1), la) ||
+                !cifp_coord(pos.substr(c1 + 1, c2 == std::string::npos ? std::string::npos : c2 - c1 - 1), lo))
+                continue;
+            m[norm_rwy(id.substr(2))] = {la, lo};
+        }
+        it = cache_.find(airport);
+    }
+    auto t = it->second.find(rwy), o = it->second.find(opposite_rwy(rwy));
+    if (t == it->second.end() || o == it->second.end()) return false;
+    out = {t->second.first, t->second.second, o->second.first, o->second.second};
+    return true;
+}
+
+struct LineGeom {
+    double rwy_crs, rlen, ue, un, along, cross, dang;
+    bool has_thr_miss = false;
+    double thr_miss = 0;
+};
+
+// LOC at lat/lon with true_crs vs the centerline from e toward its far end.
+static bool line_geom(const RunwayEnd &e, double lat, double lon, double true_crs, LineGeom &g) {
+    double oe, on;
+    to_en(e.lat, e.lon, e.opp_lat, e.opp_lon, oe, on);
+    g.rlen = std::hypot(oe, on);
+    if (g.rlen < 50) return false;
+    g.ue = oe / g.rlen; g.un = on / g.rlen;
+    g.rwy_crs = std::fmod(deg(std::atan2(g.ue, g.un)) + 360.0, 360.0);
+    double le, ln;
+    to_en(e.lat, e.lon, lat, lon, le, ln);
+    g.along = le * g.ue + ln * g.un;
+    g.cross = le * g.un - ln * g.ue;
+    g.dang = wrap180(g.rwy_crs - true_crs);
+    // Where the published beam crosses the threshold, relative to the centerline.
+    double bue = std::sin(rad(true_crs)), bun = std::cos(rad(true_crs));
+    double denom = bue * g.ue + bun * g.un;
+    if (std::fabs(denom) > 1e-6) {
+        double t = g.along / denom;
+        double be = le - t * bue, bn = ln - t * bun;
+        g.has_thr_miss = true;
+        g.thr_miss = be * g.un - bn * g.ue;
+    }
+    return true;
+}
+
+LocResult fix_loc(const std::vector<std::string> &p, const RunwayDb &db, const Params &a, CifpDb *cifp) {
     LocResult r;
     r.fields = p;
     double brg_field;
@@ -154,6 +244,23 @@ LocResult fix_loc(const std::vector<std::string> &p, const RunwayDb &db, const P
     std::string uname = upper(name);
     for (auto &s : a.skip_names)
         if (uname.find(s) != std::string::npos) { r.status = "skip_type"; return r; }
+    if (a.skip_ids.count(airport + " " + upper(p[7]))) { r.status = "skip_listed"; return r; }
+
+    // Is the stock LOC on the real runway's centerline? If not, the offset is
+    // in the real procedure and must stay.
+    RunwayEnd real;
+    LineGeom g;
+    if (cifp && cifp->runway(airport, rwy, real) && line_geom(real, r.lat, r.lon, r.true_crs, g)) {
+        r.has_real = true;
+        r.real_d_crs = g.dang; r.real_cross_m = g.cross;
+        r.has_real_thr_miss = g.has_thr_miss; r.real_thr_miss_m = g.thr_miss;
+        if (std::fabs(g.dang) > a.real_angle || std::fabs(g.cross) > a.real_offset ||
+            (g.has_thr_miss && std::fabs(g.thr_miss) > a.real_offset)) {
+            r.status = "skip_real_offset";
+            return r;
+        }
+    }
+
     auto ai = db.find(airport);
     if (ai == db.end()) { r.status = "no_airport"; return r; }
     auto ri = ai->second.find(rwy);
@@ -161,27 +268,11 @@ LocResult fix_loc(const std::vector<std::string> &p, const RunwayDb &db, const P
     const RunwayEnd &e = ri->second;
 
     // Centerline from this end toward the far end (the LOC course).
-    double oe, on;
-    to_en(e.lat, e.lon, e.opp_lat, e.opp_lon, oe, on);
-    double rlen = std::hypot(oe, on);
-    if (rlen < 50) { r.status = "bad_runway"; return r; }
-    double ue = oe / rlen, un = on / rlen;
-    double rwy_crs = std::fmod(deg(std::atan2(ue, un)) + 360.0, 360.0);
-
-    double le, ln;
-    to_en(e.lat, e.lon, r.lat, r.lon, le, ln);
-    double along = le * ue + ln * un;
-    double cross = le * un - ln * ue;
-    double dang = wrap180(rwy_crs - r.true_crs);
-    // Where the published beam crosses the threshold, relative to the centerline.
-    double bue = std::sin(rad(r.true_crs)), bun = std::cos(rad(r.true_crs));
-    double denom = bue * ue + bun * un;
-    if (std::fabs(denom) > 1e-6) {
-        double t = along / denom;
-        double be = le - t * bue, bn = ln - t * bun;
-        r.has_thr_miss = true;
-        r.thr_miss_m = be * un - bn * ue;
-    }
+    if (!line_geom(e, r.lat, r.lon, r.true_crs, g)) { r.status = "bad_runway"; return r; }
+    double rwy_crs = g.rwy_crs, rlen = g.rlen, ue = g.ue, un = g.un, along = g.along, cross = g.cross,
+           dang = g.dang;
+    r.has_thr_miss = g.has_thr_miss;
+    r.thr_miss_m = g.thr_miss;
     r.has_geom = true;
     r.rwy_crs = rwy_crs; r.d_crs = dang; r.cross_m = cross; r.along_m = along; r.rwy_len = rlen;
 
@@ -322,6 +413,7 @@ RunSummary run(const std::string &nav_path, const std::vector<std::string> &apt_
     RunSummary s;
     RunwayDb db;
     for (auto &ap : apt_paths) read_apt_runways(ap, db);
+    CifpDb cifp(p.cifp_dir);
 
     std::ifstream nf(nav_path, std::ios::binary);
     if (!nf) { s.error = "cannot open " + nav_path; return s; }
@@ -340,7 +432,7 @@ RunSummary run(const std::string &nav_path, const std::vector<std::string> &apt_
         if (f.size() >= 11 && (f[0] == "4" || f[0] == "5" || f[0] == "6" || f[0] == "12" || f[0] == "13"))
             comp[f[7] + "|" + f[8]].push_back(f);
         if (f.size() < 12 || (f[0] != "4" && f[0] != "5")) continue;
-        s.results.push_back(fix_loc(f, db, p));
+        s.results.push_back(fix_loc(f, db, p, &cifp));
         s.counts[s.results.back().status]++;
     }
     nf.close();
@@ -419,7 +511,7 @@ RunSummary run(const std::string &nav_path, const std::vector<std::string> &apt_
     if (!report_path.empty()) {
         std::ofstream c(report_path, std::ios::binary);
         c << "status,type,ident,airport,region,rwy,name,lat,lon,true_crs,rwy_crs,d_crs,cross_m,"
-             "thr_miss_m,along_m,rwy_len,new_lat,new_lon\n";
+             "thr_miss_m,along_m,rwy_len,new_lat,new_lon,real_d_crs,real_cross_m,real_thr_miss_m\n";
         for (auto &r : s.results) {
             const auto &f = r.fields;
             std::string name;
@@ -435,6 +527,11 @@ RunSummary run(const std::string &nav_path, const std::vector<std::string> &apt_
                 c << ",,,,,,";
             if (r.fixed()) c << "," << num(r.new_lat, 9) << "," << num(r.new_lon, 9);
             else c << ",,";
+            if (r.has_real)
+                c << "," << num(r.real_d_crs, 3) << "," << num(r.real_cross_m, 1) << ","
+                  << (r.has_real_thr_miss ? num(r.real_thr_miss_m, 1) : "");
+            else
+                c << ",,,";
             c << "\n";
         }
     }
@@ -446,6 +543,12 @@ static std::string trim(std::string s) {
     size_t i = 0;
     while (i < s.size() && std::isspace((unsigned char)s[i])) i++;
     return s.substr(i);
+}
+
+std::string cifp_dir_for(const std::string &nav_path) {
+    std::error_code ec;
+    fs::path d = fs::absolute(fs::path(nav_path), ec).parent_path() / "CIFP";
+    return fs::is_directory(d, ec) ? d.string() : "";
 }
 
 void discover(const std::string &xp_root, std::string &nav, std::vector<std::string> &apts) {

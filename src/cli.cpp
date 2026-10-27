@@ -12,12 +12,13 @@ static void usage() {
     std::puts(
         "usage: locfix --xplane DIR | --nav earth_nav.dat --apt apt.dat [--apt ...]\n"
         "              [-o user_nav.dat] [--report report.csv] [--max-angle 1.0] [--max-offset 100]\n"
-        "              [--review-offset 30] [--max-beyond 2500] [--min-fix 0.5] [--include-types IGS,...]");
+        "              [--review-offset 30] [--max-beyond 2500] [--min-fix 0.5] [--include-types IGS,...]\n"
+        "              [--skip-ids \"RJBT ITH,...\"] [--cifp DIR|none] [--real-offset 15] [--real-angle 0.5]");
 }
 
 int main(int argc, char **argv) {
     locfix::Params p;
-    std::string xp, nav, out, report;
+    std::string xp, nav, out, report, cifp;
     std::vector<std::string> apts;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -35,7 +36,22 @@ int main(int argc, char **argv) {
         else if (a == "--review-offset") p.review_offset = std::atof(val().c_str());
         else if (a == "--max-beyond") p.max_beyond = std::atof(val().c_str());
         else if (a == "--min-fix") p.min_fix = std::atof(val().c_str());
-        else if (a == "--include-types") {
+        else if (a == "--real-offset") p.real_offset = std::atof(val().c_str());
+        else if (a == "--real-angle") p.real_angle = std::atof(val().c_str());
+        else if (a == "--cifp") cifp = val();
+        else if (a == "--skip-ids") {
+            std::string v = val();
+            size_t s = 0;
+            while (s <= v.size()) {
+                size_t e = v.find(',', s);
+                if (e == std::string::npos) e = v.size();
+                std::string t;
+                for (auto &w : locfix::split_ws(v.substr(s, e - s))) t += (t.empty() ? "" : " ") + w;
+                for (auto &c : t) c = (char)std::toupper((unsigned char)c);
+                if (!t.empty()) p.skip_ids.insert(t);
+                s = e + 1;
+            }
+        } else if (a == "--include-types") {
             std::string v = val();
             size_t s = 0;
             while (s <= v.size()) {
@@ -56,10 +72,14 @@ int main(int argc, char **argv) {
         if (apts.empty()) apts = da;
     }
     if (nav.empty() || apts.empty()) { usage(); return 2; }
+    if (cifp.empty()) cifp = locfix::cifp_dir_for(nav);
+    else if (cifp == "none") cifp.clear();
+    p.cifp_dir = cifp;
     if (out.empty()) out = xp.empty() ? "user_nav.dat" : (std::filesystem::path(xp) / "Custom Data" / "user_nav.dat").string();
     if (report.empty()) report = (std::filesystem::path(out).parent_path() / "user_nav_report.csv").string();
 
     std::printf("navdata: %s\n", nav.c_str());
+    std::printf("CIFP:    %s\n", cifp.empty() ? "(none, offset localizers only caught by the scenery checks)" : cifp.c_str());
     for (auto &a : apts) std::printf("apt.dat: %s\n", a.c_str());
     auto s = locfix::run(nav, apts, out, report, p, "(cli)");
     if (!s.error.empty()) { std::fprintf(stderr, "error: %s\n", s.error.c_str()); return 1; }
