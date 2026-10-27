@@ -68,7 +68,7 @@ Every message is also written to `Log.txt` on lines starting with `LOC Fixer:`.
 | `min_fix` | 0.5 | Leave alone if already within this many metres. |
 | `skip_types` | `LDA, SDF, IGS` | Approach types that are deliberately not aligned with the runway. |
 | `use_cifp` | 1 | Check each LOC against the real runway from the navdata's CIFP folder and leave intentionally offset ones alone (see below). 0 turns it off. |
-| `real_offset` | 15 | Offset if the LOC, or where its beam crosses the threshold, is further than this from the real centerline (metres). |
+| `real_offset` | 15 | Offset if the LOC antenna is further than this from the real centerline (metres). |
 | `real_angle` | 0.5 | Offset if the LOC course differs from the real runway by more (degrees). |
 | `skip_ids` | `RJBT ITH` | Localizers never to touch, as `AIRPORT IDENT`, comma separated. |
 
@@ -178,9 +178,11 @@ stock data) with one file per airport, and its `RWY:` records give the real
 landing thresholds. Before aligning a LOC, the tools measure it against the
 real centerline between the two thresholds:
 
-* on the real centerline: the navdata is right and the scenery is off, so it
-  is aligned as usual;
-* more than `real_offset` m (LOC or threshold crossing) or `real_angle`
+* antenna on the real centerline: aligned as usual. Many stock courses are
+  0.1 to 0.3 degrees off the real runway, which alone misses the threshold
+  by 15 to 20 m; that is the error being fixed, not an offset, so the
+  threshold miss is not used for this check;
+* antenna more than `real_offset` m off, or course more than `real_angle`
   degrees off: the offset is real, so it is left alone as `skip_real_offset`;
 * no CIFP file or runway: the scenery checks above still apply.
 

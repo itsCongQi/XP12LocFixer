@@ -280,8 +280,9 @@ def fix_loc(p, rwys, a):
             _, _, _, _, _, rcross, rdang, rmiss = g
             d.update(real_cross_m=round(rcross, 1), real_d_crs=round(rdang, 3),
                      real_thr_miss_m=None if rmiss is None else round(rmiss, 1))
-            if abs(rdang) > a.real_angle or abs(rcross) > a.real_offset or \
-                    (rmiss is not None and abs(rmiss) > a.real_offset):
+            # Only the antenna position counts: a small course error in the
+            # navdata also misses the threshold, and that is what gets fixed.
+            if abs(rdang) > a.real_angle or abs(rcross) > a.real_offset:
                 return "skip_real_offset", d, None
 
     if airport not in rwys:
@@ -405,7 +406,7 @@ def main():
     ap.add_argument("--include-types", default="", help="comma list of names normally skipped to include anyway, e.g. IGS")
     ap.add_argument("--skip-ids", default="", help='comma list of "AIRPORT IDENT" localizers to never touch, e.g. "RJBT ITH"')
     ap.add_argument("--cifp", help="CIFP folder with real runway thresholds (default: CIFP next to earth_nav.dat); 'none' to disable")
-    ap.add_argument("--real-offset", type=float, default=15.0, help="skip as intentionally offset if the LOC or its threshold crossing is further than this from the real (CIFP) centerline (m, default 15)")
+    ap.add_argument("--real-offset", type=float, default=15.0, help="skip as intentionally offset if the LOC antenna is further than this from the real (CIFP) centerline (m, default 15)")
     ap.add_argument("--real-angle", type=float, default=0.5, help="skip as intentionally offset if the LOC course differs from the real runway by more (deg, default 0.5)")
     a = ap.parse_args()
 

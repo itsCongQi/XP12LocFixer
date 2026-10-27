@@ -254,8 +254,9 @@ LocResult fix_loc(const std::vector<std::string> &p, const RunwayDb &db, const P
         r.has_real = true;
         r.real_d_crs = g.dang; r.real_cross_m = g.cross;
         r.has_real_thr_miss = g.has_thr_miss; r.real_thr_miss_m = g.thr_miss;
-        if (std::fabs(g.dang) > a.real_angle || std::fabs(g.cross) > a.real_offset ||
-            (g.has_thr_miss && std::fabs(g.thr_miss) > a.real_offset)) {
+        // Only the antenna position counts: a small course error in the
+        // navdata also misses the threshold, and that is what gets fixed.
+        if (std::fabs(g.dang) > a.real_angle || std::fabs(g.cross) > a.real_offset) {
             r.status = "skip_real_offset";
             return r;
         }
