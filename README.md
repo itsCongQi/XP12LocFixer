@@ -183,7 +183,9 @@ real centerline between the two thresholds:
   by 15 to 20 m; that is the error being fixed, not an offset, so the
   threshold miss is not used for this check;
 * antenna more than `real_offset` m off, or course more than `real_angle`
-  degrees off: the offset is real, so it is left alone as `skip_real_offset`;
+  degrees off: the offset is real, so it is left alone as `skip_real_offset`.
+  A LOC whose position is published rounded to whole arc-seconds (RJTL 19,
+  about 2% of them) gets 20 m more, since rounding alone can move it that far;
 * no CIFP file or runway: the scenery checks above still apply.
 
 For RJBT 01 the LOC is 30.1 m off the real centerline (30.4 m at the
