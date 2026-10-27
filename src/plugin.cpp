@@ -30,7 +30,7 @@
 
 namespace fs = std::filesystem;
 
-#define PLUGIN_VERSION "1.1.1"
+#define PLUGIN_VERSION "1.1.2"
 
 static std::string g_xp_root, g_plugin_root, g_user_nav, g_report, g_state_path;
 static locfix::Params g_params;

@@ -195,6 +195,14 @@ bool CifpDb::runway(const std::string &airport, const std::string &rwy, RunwayEn
     return true;
 }
 
+// m allowed on top of real_offset for whole-second positions.
+static const double kRoundedSlack = 20.0;
+
+static bool whole_seconds(double v) {
+    double s = std::fabs(v) * 3600.0;
+    return std::fabs(s - std::round(s)) < 0.01;
+}
+
 struct LineGeom {
     double rwy_crs, rlen, ue, un, along, cross, dang;
     bool has_thr_miss = false;
@@ -256,7 +264,10 @@ LocResult fix_loc(const std::vector<std::string> &p, const RunwayDb &db, const P
         r.has_real_thr_miss = g.has_thr_miss; r.real_thr_miss_m = g.thr_miss;
         // Only the antenna position counts: a small course error in the
         // navdata also misses the threshold, and that is what gets fixed.
-        if (std::fabs(g.dang) > a.real_angle || std::fabs(g.cross) > a.real_offset) {
+        // Some LOCs (often military fields, e.g. RJTL 19) are published
+        // rounded to whole arc-seconds, up to ~20 m from the true antenna.
+        double slack = whole_seconds(r.lat) && whole_seconds(r.lon) ? kRoundedSlack : 0.0;
+        if (std::fabs(g.dang) > a.real_angle || std::fabs(g.cross) > a.real_offset + slack) {
             r.status = "skip_real_offset";
             return r;
         }

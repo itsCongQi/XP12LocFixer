@@ -212,6 +212,12 @@ def read_cifp_runways(path):
 
 
 _cifp_cache = {}
+ROUNDED_SLACK = 20.0    # m allowed on top of --real-offset for whole-second positions
+
+
+def whole_seconds(v):
+    s = abs(v) * 3600.0
+    return abs(s - round(s)) < 0.01
 
 
 def real_runway(cifp_dir, airport, rwy):
@@ -282,7 +288,10 @@ def fix_loc(p, rwys, a):
                      real_thr_miss_m=None if rmiss is None else round(rmiss, 1))
             # Only the antenna position counts: a small course error in the
             # navdata also misses the threshold, and that is what gets fixed.
-            if abs(rdang) > a.real_angle or abs(rcross) > a.real_offset:
+            # Some LOCs (often military fields, e.g. RJTL 19) are published
+            # rounded to whole arc-seconds, up to ~20 m from the true antenna.
+            slack = ROUNDED_SLACK if whole_seconds(lat) and whole_seconds(lon) else 0.0
+            if abs(rdang) > a.real_angle or abs(rcross) > a.real_offset + slack:
                 return "skip_real_offset", d, None
 
     if airport not in rwys:
